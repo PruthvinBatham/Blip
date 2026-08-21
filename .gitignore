@@ -1,0 +1,4 @@
+# Build output — everything here is reproducible with ./build.sh
+build/
+
+.DS_Store
