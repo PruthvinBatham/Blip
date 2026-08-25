@@ -13,12 +13,18 @@ private enum EyeStyle {
     case archDown   // ⌣  asleep
 }
 
-/// Blip is drawn as a single template shape: one filled silhouette with the
-/// eyes and mouth carved out of it. Template rendering means the system tints
-/// him for us, so he stays legible on a light or dark menu bar without us
-/// tracking appearance changes at all.
+/// Blip is drawn as a single silhouette with the eyes and mouth taken out of
+/// it. In monochrome that silhouette is a template image, so the system tints
+/// him and he stays legible on a light or dark menu bar with no appearance
+/// handling at all; in colour he carries his own mood hue and the face is
+/// painted rather than carved. `Skin` is the only difference between the two.
 enum PetRenderer {
     static let canvas = CGSize(width: 22, height: 18)
+
+    /// Nothing may be drawn above this line. The menu bar gives a status item
+    /// 18 points and silently crops the rest, so the floating extras — bubbles,
+    /// hearts — have to finish their rise inside it.
+    static let ceiling: CGFloat = canvas.height - 0.6
 
     /// Every animation below is built from integer multiples of this loop, so
     /// the whole character repeats exactly every `loopPeriod` seconds. That is
@@ -27,20 +33,26 @@ enum PetRenderer {
     static let loopPeriod: Double = 4.0
     static let w = 2 * Double.pi / loopPeriod
 
-    /// Template images ignore this and let the system tint them, but the
-    /// offline contact-sheet and icon renderers need real colours.
-    static var tint: NSColor = .black
+    /// The colours in force for the current draw. Set through `image(_:skin:)`
+    /// for the status item, or assigned directly by the offline renderers.
+    static var skin: Skin = .mono(.black)
 
     // MARK: - Public entry points
 
-    static func image(_ pose: Pose) -> NSImage {
+    static func image(_ pose: Pose, skin: Skin = .mono(.black)) -> NSImage {
         let img = NSImage(size: NSSize(width: canvas.width, height: canvas.height),
                           flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            // NSImage runs this handler whenever it feels like redrawing, which
+            // is not necessarily now — so the skin is captured and applied here
+            // rather than read off the global at call time.
+            let previous = PetRenderer.skin
+            PetRenderer.skin = skin
             draw(pose, in: ctx)
+            PetRenderer.skin = previous
             return true
         }
-        img.isTemplate = true
+        img.isTemplate = skin.isTemplate
         return img
     }
 
@@ -116,9 +128,9 @@ enum PetRenderer {
                              transform: nil))
         solid.addEllipse(in: CGRect(x: cx - rx * 0.70, y: baseY - 0.95, width: 2.8, height: 2.2))
         solid.addEllipse(in: CGRect(x: cx + rx * 0.70 - 2.8, y: baseY - 0.95, width: 2.8, height: 2.2))
-        solid.addPath(antenna(cx: cx, topY: bodyRect.maxY, t: t, mood: m))
+        let ant = antenna(cx: cx, topY: bodyRect.maxY, t: t, mood: m)
 
-        // The face, carved back out of the silhouette.
+        // The face, carved back out of the silhouette or painted onto it.
         let holes = CGMutablePath()
         let eyeY = baseY + ry * 1.16
         let eyeDX: CGFloat = 2.35
@@ -145,29 +157,51 @@ enum PetRenderer {
             }
         }
 
-        // Two passes rather than one even-odd fill: the body, feet and antenna
-        // overlap each other, and a single even-odd pass would turn every one
-        // of those overlaps into an unwanted hole. So fill the silhouette with
-        // the winding rule, then carve the face out with destination-out. The
-        // transparency layer keeps that carve from punching through whatever
-        // was already on the context underneath him.
         ctx.saveGState()
-        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-        ctx.setFillColor(tint.cgColor)
-        ctx.addPath(solid)
-        ctx.fillPath(using: .winding)
-
-        ctx.setBlendMode(.destinationOut)
-        ctx.setFillColor(NSColor.black.cgColor)
-        ctx.addPath(holes)
-        ctx.fillPath(using: .evenOdd)
-        ctx.endTransparencyLayer()
+        if let face = skin.face {
+            // Coloured: the face is painted over the silhouette in a deeper
+            // shade, so it doesn't depend on what is behind him.
+            fillSilhouette(solid, antenna: ant, in: ctx)
+            ctx.setFillColor(face.cgColor)
+            ctx.addPath(holes)
+            ctx.fillPath(using: .evenOdd)
+        } else {
+            // Monochrome: the face is carved out with destination-out, leaving
+            // the bar showing through. The transparency layer keeps that carve
+            // from punching through whatever was on the context underneath him.
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            fillSilhouette(solid, antenna: ant, in: ctx)
+            ctx.setBlendMode(.destinationOut)
+            ctx.setFillColor(NSColor.black.cgColor)
+            ctx.addPath(holes)
+            ctx.fillPath(using: .evenOdd)
+            ctx.endTransparencyLayer()
+        }
         ctx.restoreGState()
 
         drawExtras(pose, cx: cx, top: bodyRect.maxY, right: bodyRect.maxX, in: ctx)
     }
 
+    /// Body, feet and antenna, unioned into one opaque shape.
+    ///
+    /// They have to be filled as separate passes rather than as one path. An
+    /// even-odd fill turns every overlap between them into a hole; a winding
+    /// fill fixes the body and feet, which are all wound the same way, but not
+    /// the antenna — the stalk is a *stroked* outline, and where its contour
+    /// runs against the ball's the two windings cancel and the ball comes out
+    /// as a ring. Three separate opaque fills can't cancel each other.
+    private static func fillSilhouette(_ solid: CGPath, antenna: (stalk: CGPath, ball: CGPath),
+                                       in ctx: CGContext) {
+        ctx.setFillColor(skin.body.cgColor)
+        for piece in [solid, antenna.stalk, antenna.ball] {
+            ctx.addPath(piece)
+            ctx.fillPath(using: .winding)
+        }
+    }
+
     /// Whatever floats around Blip: sleep bubbles, panic sweat, affection.
+    /// Everything here rises, so every path is kept under `ceiling` — the menu
+    /// bar crops what it can't fit and the top bubble simply vanished.
     private static func drawExtras(_ pose: Pose, cx: CGFloat, top: CGFloat,
                                    right: CGFloat, in ctx: CGContext) {
         let t = pose.t
@@ -179,10 +213,10 @@ enum PetRenderer {
             // Three bubbles rising and fading on a staggered loop.
             for i in 0..<3 {
                 let phase = (t / loopPeriod + Double(i) * 0.33).truncatingRemainder(dividingBy: 1)
-                let r = CGFloat(0.55 + phase * 0.85)
+                let r = CGFloat(0.5 + phase * 0.6)
                 let x = right - 0.6 + CGFloat(phase) * 2.6
-                let y = top - 1.2 + CGFloat(phase) * 5.2
-                ctx.setFillColor(tint.withAlphaComponent(1 - phase * 0.95).cgColor)
+                let y = min(top - 2.4 + CGFloat(phase) * 3.6, ceiling - r * 2)
+                ctx.setFillColor(skin.body.withAlphaComponent(1 - phase * 0.95).cgColor)
                 ctx.fillEllipse(in: CGRect(x: x, y: y, width: r * 2, height: r * 2))
             }
 
@@ -190,24 +224,24 @@ enum PetRenderer {
             // One sweat bead, launched sideways and falling away.
             let phase = (t * 2).truncatingRemainder(dividingBy: 1)
             let x = right - 0.2 + CGFloat(phase) * 3.0
-            let y = top - 3.0 + CGFloat(sin(phase * .pi)) * 2.6
-            ctx.setFillColor(tint.withAlphaComponent(1 - phase * 0.8).cgColor)
+            let y = min(top - 3.0 + CGFloat(sin(phase * .pi)) * 2.6, ceiling - 1.9)
+            ctx.setFillColor(skin.body.withAlphaComponent(1 - phase * 0.8).cgColor)
             ctx.fillEllipse(in: CGRect(x: x, y: y, width: 1.5, height: 1.9))
 
         case .happy:
             for i in 0..<2 {
                 let phase = (t * 0.5 + Double(i) * 0.5).truncatingRemainder(dividingBy: 1)
-                let s = CGFloat(1.6 + phase * 0.9)
+                let s = CGFloat(1.4 + phase * 0.7)
                 let x = right - 1.4 + CGFloat(phase) * 2.2
-                let y = top - 2.4 + CGFloat(phase) * 5.4
-                ctx.setFillColor(tint.withAlphaComponent(1 - phase * 0.9).cgColor)
+                let y = min(top - 3.4 + CGFloat(phase) * 3.4, ceiling - s)
+                ctx.setFillColor(skin.body.withAlphaComponent(1 - phase * 0.9).cgColor)
                 ctx.addPath(heart(in: CGRect(x: x, y: y, width: s, height: s)))
                 ctx.fillPath()
             }
 
         case .zoomies:
             // Speed lines trailing behind him.
-            ctx.setFillColor(tint.withAlphaComponent(0.75).cgColor)
+            ctx.setFillColor(skin.body.withAlphaComponent(0.75).cgColor)
             for i in 0..<2 {
                 let y = top - 4.0 - CGFloat(i) * 2.6
                 let w = 2.2 + CGFloat(sin(t * PetRenderer.w * 9 + Double(i) * .pi)) * 0.9
@@ -221,7 +255,10 @@ enum PetRenderer {
 
     // MARK: - Shape helpers
 
-    private static func antenna(cx: CGFloat, topY: CGFloat, t: Double, mood: Mood) -> CGPath {
+    /// The stalk and the ball, handed back separately so the caller can fill
+    /// them as a union — see `fillSilhouette`.
+    private static func antenna(cx: CGFloat, topY: CGFloat, t: Double,
+                                mood: Mood) -> (stalk: CGPath, ball: CGPath) {
         // The antenna is where most of the mood actually reads: it whips around
         // when he's excited and flops over when he's flat.
         let wobble: CGFloat
@@ -231,8 +268,8 @@ enum PetRenderer {
         case .zoomies:  wobble = CGFloat(sin(t * w * 8)) * 1.7;  droop = 0
         case .working:  wobble = CGFloat(sin(t * w * 4)) * 0.7;  droop = 0
         case .happy:    wobble = CGFloat(sin(t * w * 5)) * 1.2;  droop = 0
-        case .hungry:   wobble = 1.9;                        droop = 1.5
-        case .sleeping: wobble = 1.1;                        droop = 1.3
+        case .hungry:   wobble = 1.9;                            droop = 1.5
+        case .sleeping: wobble = 1.1;                            droop = 1.3
         default:        wobble = CGFloat(sin(t * w)) * 0.5;      droop = 0
         }
 
@@ -246,10 +283,9 @@ enum PetRenderer {
         let stroked = stalk.copy(strokingWithWidth: 0.85, lineCap: .round,
                                  lineJoin: .round, miterLimit: 10)
 
-        let path = CGMutablePath()
-        path.addPath(stroked)
-        path.addEllipse(in: CGRect(x: tipX - 0.95, y: tipY - 0.95, width: 1.9, height: 1.9))
-        return path
+        let ball = CGMutablePath()
+        ball.addEllipse(in: CGRect(x: tipX - 0.95, y: tipY - 0.95, width: 1.9, height: 1.9))
+        return (stroked, ball)
     }
 
     /// A round eye with an eyelid closing over it from above. The lidded shape
@@ -271,9 +307,13 @@ enum PetRenderer {
         let d = rr * (2 * o - 1)
         let theta = asin(max(-1, min(1, d / rr)))
         let centre = CGPoint(x: x, y: y)
+        // Anticlockwise, i.e. the long way round *under* the lid line. Going the
+        // short way instead keeps the cap above it, which inverts the whole
+        // control: a nearly-open eye becomes a sliver and a blink swells into a
+        // full circle.
         p.move(to: CGPoint(x: x + rr * cos(.pi - theta), y: y + rr * sin(.pi - theta)))
         p.addArc(center: centre, radius: rr,
-                 startAngle: .pi - theta, endAngle: theta, clockwise: true)
+                 startAngle: .pi - theta, endAngle: theta, clockwise: false)
         p.closeSubpath()
         return p
     }

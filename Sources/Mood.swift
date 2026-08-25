@@ -38,12 +38,16 @@ struct MoodEngine {
 
     mutating func mood(for v: Vitals, now: Date = Date()) -> Mood {
         let wanted = rawMood(for: v, now: now)
-        if wanted != current && now.timeIntervalSince(heldSince) >= dwell {
-            current = wanted
-            heldSince = now
-        } else if wanted == current {
-            heldSince = max(heldSince, heldSince)
+        guard wanted != current else { return current }
+
+        // A head-pat is a direct request rather than a threshold being crossed,
+        // so it skips the dwell — otherwise a click on "Pet Blip" can sit there
+        // doing nothing for over a second, which reads as a broken menu item.
+        guard wanted == .happy || now.timeIntervalSince(heldSince) >= dwell else {
+            return current
         }
+        current = wanted
+        heldSince = now
         return current
     }
 

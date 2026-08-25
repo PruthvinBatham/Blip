@@ -2,12 +2,16 @@ import AppKit
 
 let args = CommandLine.arguments
 
+/// `mono` on the end of a dev command reviews the monochrome template art
+/// instead of the mood colours.
+let mono = args.count > 3 && args[3] == "mono"
+
 if args.count >= 3, args[1] == "--sheet" {
-    DevRender.contactSheet(to: args[2])
+    DevRender.contactSheet(to: args[2], mono: mono)
     exit(0)
 }
 if args.count >= 3, args[1] == "--pixels" {
-    DevRender.pixelCheck(to: args[2])
+    DevRender.pixelCheck(to: args[2], mono: mono)
     exit(0)
 }
 if args.count >= 3, args[1] == "--gif" {

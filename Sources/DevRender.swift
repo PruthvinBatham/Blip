@@ -5,7 +5,7 @@ import AppKit
 /// the app icon can never drift from the actual character.
 enum DevRender {
 
-    static func contactSheet(to path: String, scale: CGFloat = 9) {
+    static func contactSheet(to path: String, mono: Bool = false, scale: CGFloat = 9) {
         let moods = Mood.allCases
         let times: [Double] = [0.0, 0.55, 1.1, 1.65]
         let cell = CGSize(width: PetRenderer.canvas.width * scale,
@@ -43,8 +43,11 @@ enum DevRender {
             label.draw(at: NSPoint(x: 12, y: y + cell.height / 2 - 8))
 
             for (col, dt) in times.enumerated() {
-                for (panel, bg) in [(CGFloat(0), NSColor.black), (CGFloat(1), NSColor.white)] {
-                    PetRenderer.tint = bg
+                // Panel 0 sits on the white background, panel 1 on the dark one.
+                for panel in [CGFloat(0), CGFloat(1)] {
+                    let onDark = panel == 1
+                    PetRenderer.skin = mono ? .mono(onDark ? .white : .black)
+                                            : mood.skin(dark: onDark)
                     let ox = labelW + panel * (panelW + gap) + CGFloat(col) * cell.width
                     ctx.saveGState()
                     ctx.translateBy(x: ox, y: y)
@@ -63,7 +66,7 @@ enum DevRender {
         header.draw(at: NSPoint(x: 12, y: H - 26))
 
         NSGraphicsContext.restoreGraphicsState()
-        PetRenderer.tint = .black
+        PetRenderer.skin = .mono(.black)
 
         if let data = rep.representation(using: .png, properties: [:]) {
             try? data.write(to: URL(fileURLWithPath: path))
@@ -101,7 +104,9 @@ enum DevRender {
         }
         ctx.restoreGState()
 
-        PetRenderer.tint = .white
+        // The icon stays a white silhouette on the gradient: a mood colour on
+        // top of it would fight the plate rather than read as his own.
+        PetRenderer.skin = .mono(.white)
         let scale = rect.width * 0.62 / PetRenderer.canvas.width
         ctx.saveGState()
         ctx.translateBy(x: S / 2 - PetRenderer.canvas.width * scale / 2,
@@ -109,7 +114,7 @@ enum DevRender {
         ctx.scaleBy(x: scale, y: scale)
         PetRenderer.draw(Pose(mood: .happy, t: 0.32, energy: 1), in: ctx)
         ctx.restoreGState()
-        PetRenderer.tint = .black
+        PetRenderer.skin = .mono(.black)
 
         return rep.representation(using: .png, properties: [:])
     }
@@ -137,7 +142,7 @@ extension DevRender {
     /// Renders Blip at the true retina size the menu bar uses (2x), then blows
     /// that bitmap up with no interpolation. The 9x contact sheet is vector-
     /// scaled and flatters the art; this shows the actual pixels.
-    static func pixelCheck(to path: String) {
+    static func pixelCheck(to path: String, mono: Bool = false) {
         let moods: [Mood] = [.idle, .curious, .working, .frantic, .zoomies, .sleeping, .hungry, .happy]
         let scale: CGFloat = 2                 // retina menu bar
         let zoom: CGFloat = 7                  // inspection blow-up
@@ -175,10 +180,12 @@ extension DevRender {
                 if let cctx = NSGraphicsContext.current?.cgContext {
                     bg.setFill()
                     NSRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)).fill()
-                    PetRenderer.tint = row == 0 ? .white : .black
+                    let onDark = row == 0
+                    PetRenderer.skin = mono ? .mono(onDark ? .white : .black)
+                                            : mood.skin(dark: onDark)
                     cctx.scaleBy(x: scale, y: scale)
                     PetRenderer.draw(Pose(mood: mood, t: 0.9, energy: 0.7), in: cctx)
-                    PetRenderer.tint = .black
+                    PetRenderer.skin = .mono(.black)
                 }
                 NSGraphicsContext.restoreGraphicsState()
 
@@ -250,11 +257,11 @@ extension DevRender {
                 if let ctx = NSGraphicsContext.current?.cgContext {
                     bg.setFill()
                     NSRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)).fill()
-                    PetRenderer.tint = dark ? .white : .black
+                    PetRenderer.skin = mood.skin(dark: dark)
                     ctx.scaleBy(x: scale, y: scale)
                     ctx.translateBy(x: pad, y: pad)
                     PetRenderer.draw(Pose(mood: mood, t: t, energy: 0.7), in: ctx)
-                    PetRenderer.tint = .black
+                    PetRenderer.skin = .mono(.black)
                 }
                 NSGraphicsContext.restoreGraphicsState()
 
@@ -283,7 +290,7 @@ extension DevRender {
     static func menuBarMock(to path: String, dark: Bool) {
         let scale: CGFloat = 2
         let barH: CGFloat = 24
-        let barW: CGFloat = 190
+        let barW: CGFloat = 215
         let w = Int(barW * scale), h = Int(barH * scale)
 
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
@@ -300,20 +307,26 @@ extension DevRender {
                   : NSColor(srgbRed: 0.97, green: 0.97, blue: 0.98, alpha: 1)).setFill()
             NSRect(x: 0, y: 0, width: barW, height: barH).fill()
 
-            PetRenderer.tint = dark ? .white : .black
+            PetRenderer.skin = Mood.curious.skin(dark: dark)
             ctx.saveGState()
             ctx.translateBy(x: 8, y: (barH - PetRenderer.canvas.height) / 2)
             PetRenderer.draw(Pose(mood: .curious, t: 0.9, energy: 0.3), in: ctx)
             ctx.restoreGState()
 
-            // A couple of stand-in system items for context.
-            let fg = (dark ? NSColor.white : NSColor.black).withAlphaComponent(0.55)
+            // His CPU readout, then a couple of stand-in system items for context.
+            let fg = dark ? NSColor.white : NSColor.black
+            let readout = NSAttributedString(string: "12%", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .regular),
+                .foregroundColor: fg.withAlphaComponent(0.9),
+            ])
+            readout.draw(at: NSPoint(x: 31, y: barH / 2 - 6))
+
             let text = NSAttributedString(string: "100%   Fri 21 Aug  6:14 PM", attributes: [
                 .font: NSFont.systemFont(ofSize: 9.5, weight: .regular),
-                .foregroundColor: fg,
+                .foregroundColor: fg.withAlphaComponent(0.55),
             ])
-            text.draw(at: NSPoint(x: 45, y: barH / 2 - 6))
-            PetRenderer.tint = .black
+            text.draw(at: NSPoint(x: 68, y: barH / 2 - 6))
+            PetRenderer.skin = .mono(.black)
         }
         NSGraphicsContext.restoreGraphicsState()
         if let d = rep.representation(using: .png, properties: [:]) {

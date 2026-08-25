@@ -24,11 +24,18 @@ final class VitalsMonitor {
 
         // Keyboard "heat": a leaky bucket that fills while keys are landing
         // faster than ~3/sec and drains whenever they aren't.
+        //
+        // The step is capped well below the zoomies threshold so a single
+        // keystroke that happens to land inside the sample window can't fill
+        // the bucket on its own — it takes two consecutive samples, i.e. real
+        // sustained typing. Without the cap, pressing Return to launch him was
+        // enough to put him in zoomies before he had drawn his first frame.
+        let step = min(dt, 0.5)
         let sinceKey = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
         if sinceKey < 0.35 {
-            keystrokeHeat = min(1, keystrokeHeat + dt * 1.6)
+            keystrokeHeat = min(1, keystrokeHeat + step * 1.0)
         } else {
-            keystrokeHeat = max(0, keystrokeHeat - dt * 0.9)
+            keystrokeHeat = max(0, keystrokeHeat - step * 0.9)
         }
         v.typingRate = keystrokeHeat
 
